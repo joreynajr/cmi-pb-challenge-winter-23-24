@@ -1,0 +1,234 @@
+---
+title: "CMI-PB batchQC Correction"
+output: html_notebook
+author: Joaquin Reyna (jreyna@lji.org)
+---
+
+## Import libraries
+```{r, import-libraries}
+library(BatchQC)
+library(sva)
+library(reshape2)
+library(ggplot2)
+
+# paste0(as.vector(rnaseq_baseline_mat_imputed_20[,'subject_id']), rep('/', nrow(rnaseq_baseline_mat_imputed_20)),as.vector(rnaseq_baseline_mat_imputed_20[,'planned_day_relative_to_boost']))
+```
+
+## Set environment values
+```{r, set-env}
+# set year
+if (exists("params") == TRUE) {
+    assay <- as.integer(params$assay)
+} else {
+    assay <- "rnaseq"
+}
+message(paste("Assay chosen:", assay))
+
+# Set path to the harmonized directory
+imputed_dir = "../../../results/main/cmi_pb_datasets/processed/all_versus_all/imputation/test/"
+
+# Create output directory
+outdir <- "../../../results/main/cmi_pb_datasets/processed/all_versus_all/batchqc/"
+dir.create(outdir, recursive = TRUE, showWarnings = TRUE)
+```
+
+## Load imputed data
+```{r}
+# imputed_dir is path to local drive where data is saved
+#setwd(imputed_dir) 
+
+load_data <- function(fn) {
+    df <- read.table(rnaseq_fn, header = 1)
+    idx_names <- paste0(as.vector(df[,'subject_id']),
+                        rep('/', nrow(df)),
+                        as.vector(df[,'planned_day_relative_to_boost']))
+    row.names(df) <- idx_names
+    df <- subset(df, select=-c(subject_id, planned_day_relative_to_boost))
+    return(df)
+}
+
+# import 2020 imputed datasets
+tmpl_fn = file.path(imputed_dir, '%s.%d.tsv')
+
+rnaseq_fn = sprintf(tmpl_fn, "rnaseq", 2020)
+rnaseq_baseline_mat_imputed_20 <- load_data(rnaseq_fn)
+
+cytof_fn = sprintf(tmpl_fn, "live_cell_percentages", 2020)
+cytof_baseline_mat_imputed_20 <- load_data(cytof_fn)
+
+olink_fn = sprintf(tmpl_fn, "olink", 2020)
+olink_baseline_mat_imputed_20 <- load_data(olink_fn)
+
+abtiters_fn = sprintf(tmpl_fn, "ab_titer", 2020)
+abtiters_baseline_mat_imputed_20 <- load_data(abtiters_fn)
+
+# import 2021 imputed datasets
+rnaseq_fn = sprintf(tmpl_fn, "rnaseq", 2021)
+rnaseq_baseline_mat_imputed_21 <- load_data(rnaseq_fn)
+
+cytof_fn = sprintf(tmpl_fn, "live_cell_percentages", 2021)
+cytof_baseline_mat_imputed_21 <- load_data(cytof_fn)
+
+olink_fn = sprintf(tmpl_fn, "olink", 2021)
+olink_baseline_mat_imputed_21 <- load_data(olink_fn)
+
+abtiters_fn = sprintf(tmpl_fn, "ab_titer", 2021)
+abtiters_baseline_mat_imputed_21 <- load_data(abtiters_fn)
+
+# import 2022 imputed datasets
+#rnaseq_fn = sprintf(tmpl_fn, "rnaseq", 2022)
+#rnaseq_baseline_mat_imputed_22 <- read.csv(rnaseq_fn, row.names=1)
+#
+#cytof_fn = sprintf(tmpl_fn, "live_cell_percentages", 2022)
+#cytof_baseline_mat_imputed_22 <- read.csv(cytof_fn, row.names=1)
+#
+#cytof_fn = sprintf(tmpl_fn, "olink", 2022)
+#olink_baseline_mat_imputed_22 <- read.csv(olink_fn, row.names=1)
+#
+#cytof_fn = sprintf(tmpl_fn, "ab_titer", 2022)
+#abtiters_baseline_mat_imputed_22 <- read.csv(abtiters_fn, row.names=1)
+```
+
+`BatchQC` is a package that allows assessment of data for batch effects.  
+For more information, see [https://academic.oup.com/bioinformatics/article/32/24/3836/2525651]
+`ComBat` is a method to correct for batch effects, see[https://rdrr.io/bioc/sva/man/ComBat.html].  
+There are many different options for Combat, depending on the distribution of your data.  
+To help assess whether and how to use ComBat, we've created a helpful flow chart, [https://raw.githubusercontent.com/CMI-PB/2020_2021_data_merge/main/figures/BatchCorrection_Flowchart.png]
+
+## Batch QC for cell frequency
+### Prepare data
+```{r}
+# Data merge
+cytof_all <- cbind(t(cytof_baseline_mat_imputed_20),
+                   t(cytof_baseline_mat_imputed_21))
+batch  <- c (rep('2020', nrow(cytof_baseline_mat_imputed_20)),
+             rep('2021', nrow(cytof_baseline_mat_imputed_21)))
+```
+
+```{r}
+cytof_20 <- t(cytof_baseline_mat_imputed_20)
+cytof_21 <- t(cytof_baseline_mat_imputed_21)
+mcytof_20 <- melt(cytof_20)
+mcytof_21 <- melt(cytof_21)
+mcytof_20$year <- "2020"
+mcytof_21$year <- "2021"
+mcytof <- rbind(mcytof_20,mcytof_21)
+colnames(mcytof) <- c("cell_type", "subject", "value", "year")
+```
+
+### Kolmogorov-Smirnoff test comparing each cell freq pop. dist. from 2020 v 2021
+```{r}
+k.s <- data.frame(matrix(nrow=nrow(cytof_20), ncol=3))
+rownames(k.s) <- rownames(cytof_20)
+colnames(k.s) <- c('mean_20','mean_21','ks_test')
+for (i in 1:nrow(cytof_20)) {
+    cell_20 <- cytof_20[i,]
+    cell_21 <- cytof_21[i,]
+    k.s[i,"ks_test"] <- ks.test(cell_20,cell_21)$p.value
+    k.s[i,'mean_20'] <- mean(cell_20)
+    k.s[i,'mean_21'] <- mean(cell_21)
+}
+k.s$mean_20 <- round(k.s$mean_20,3)
+k.s$mean_21 <- round(k.s$mean_21,3)
+k.s$ks_test <- signif(k.s$ks_test,digits=3)
+k.s <- k.s[order(nrow(k.s):1),]
+```
+
+### Visualize different distributions
+```{r}
+ggplot(mcytof, aes(x = value, y = cell_type)) +
+  geom_density_ridges(aes(x=value, y=cell_type,
+                      group = interaction(year,cell_type),
+                      fill=year,alpha=0.5)) +
+  theme_ridges() 
+```
+### Perform BatchQC
+```{r}
+batchQC(cytof_all, batch=batch,
+        report_file="batchqc_report_Cytof_2020_2021.html", report_dir=".", 
+        report_option_binary="111111111",
+        view_report=FALSE, interactive=FALSE, batchqc_output=TRUE)
+```
+
+### Run ComBat (non-parametric) for cell frequency
+Run non-parametric ComBat since data is not normally distributed and is not count data
+```{r}
+cytof_adjust <- ComBat(dat=cytof_all, batch=batch, par.prior=FALSE)
+```
+
+### Run BatchQC on adjusted data
+```{r}
+batchQC(cytof_adjust, batch=batch,
+        report_file="batchqc_report_Cytof_adjust_2020_2021.html", report_dir=".", 
+        report_option_binary="111111111",
+        view_report=FALSE, interactive=FALSE, batchqc_output=TRUE)
+```
+
+## Batch QC for Olink
+```{r}
+# Olink merge
+olink_all <- cbind(t(olink_baseline_mat_imputed_20),t(olink_baseline_mat_imputed_21))
+batch <- c(rep('2020',nrow(olink_baseline_mat_imputed_20)),rep('2021',nrow(olink_baseline_mat_imputed_21)))
+```
+
+```{r}
+batchQC(olink_all, batch=batch,
+        report_file="batchqc_report_Olink_2020_2021.html", report_dir=".", 
+        report_option_binary="111111111",
+        view_report=FALSE, interactive=FALSE, batchqc_output=TRUE)
+```
+
+### Run ComBat on Olink data
+```{r}
+olink_adjust<-ComBat(dat=olink_all, batch=batch)
+```
+### Run BatchQC on adjusted data
+```{r}
+batchQC(olink_adjust, batch=batch,
+        report_file="batchqc_report_Olink_adjust_2020_2021.html", report_dir=".", 
+        report_option_binary="111111111",
+        view_report=FALSE, interactive=FALSE, batchqc_output=TRUE)
+```
+
+## BatchQC for Ab titers
+```{r}
+# Olink merge
+abtiters_all<-cbind(t(abtiters_baseline_mat_imputed_20),t(abtiters_baseline_mat_imputed_21))
+batch<-c(rep('2020',nrow(abtiters_baseline_mat_imputed_20)),rep('2021',nrow(abtiters_baseline_mat_imputed_21)))
+```
+
+```{r}
+batchQC(abtiters_all, batch=batch,
+        report_file="batchqc_report_Abtiters_2020_2021.html", report_dir=".", 
+        report_option_binary="111111111",
+        view_report=FALSE, interactive=FALSE, batchqc_output=TRUE)
+```
+Evaluation of batchQC output for abtiters shows no/few batch effects, so no batch corrections is needed.
+
+## BatchQC for RNASeq
+```{r}
+# RNAseq merge
+seqtiters_all <- cbind(t(rnaseq_baseline_mat_imputed_20),t(rnaseq_baseline_mat_imputed_21))
+batch <- c(rep('2020',nrow(rnaseq_baseline_mat_imputed_20)),rep('2021',nrow(rnaseq_baseline_mat_imputed_21)))
+```
+
+```{r}
+batchQC(seqtiters_all, batch=batch,
+        report_file="batchqc_report_RNASeq_2020_2021.html", report_dir=".", 
+        report_option_binary="111111111",
+        view_report=FALSE, interactive=FALSE, batchqc_output=TRUE)
+```
+
+### Run ComBat on RNASeq data
+RNASeq data has been log-transformed, so can run ComBat (assuming near-normality of distribution)
+```{r}
+seqtiters_adjust <- ComBat(dat=seqtiters_all, batch=batch)
+```
+
+### Run BatchQC on adjusted data
+```{r}
+batchQC(seqtiters_adjust, batch=batch,
+        report_file="batchqc_report_RNASeq_adjust_2020_2021.html", report_dir=".", 
+        report_option_binary="111111111",
+        view_report=FALSE, interactive=FALSE, batchqc_output=TRUE)
+```

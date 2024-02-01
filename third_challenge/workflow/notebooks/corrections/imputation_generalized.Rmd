@@ -1,0 +1,329 @@
+---
+title: "Impute CMI-PB data using the MICE algorithm"
+author: "Joaquin Reyna (jreyna@lji.org)"
+date: "2/22/2023"
+output: html_document
+params:
+    year: 2021
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r, load-libraries, message=FALSE}
+library(tidyverse)
+library(tibble)
+library(UpSetR)
+library(mice)
+#library(dplyr)
+```
+
+## Set environment values
+```{r, set-env}
+# set year
+if (exists("params") == TRUE) {
+    year <- as.integer(params$year)
+} else {
+    year = 2020
+}
+message(paste("Final year chosen:", year))
+
+# Set path to the harmonized directory
+harmony_dir = "../../../results/main/cmi_pb_datasets/processed/all_versus_all/harmonized/"
+
+# Create output directory
+outdir <- "../../../results/main/cmi_pb_datasets/processed/all_versus_all/imputation/"
+dir.create(outdir, recursive = TRUE, showWarnings = TRUE)
+```
+
+
+## Import Data
+### Initialize the datasets
+```{r, initialize-the-datasets}
+assays <- c("plasma_ab_titer", "pbmc_cell_frequency", "olink", "pbmc_gene_expression")
+
+debug <- FALSE
+
+# Create a list of datasets with an empty nested list for each year
+datasets <- list()
+```
+
+### Load each dataset
+```{r, load-each-dataset}
+for (i in 1:length(assays)) {
+  assay <- assays[i]
+  message(paste('assay:', assay))
+  
+  if (assay == 'plasma_ab_titer'){
+      harmonized_fn <- file.path(harmony_dir, sprintf("%s.mfi_raw.%d.pivoted.tsv", assay, year))
+      
+  } else {
+      harmonized_fn <- file.path(harmony_dir, sprintf("%s.%d.pivoted.tsv", assay, year))
+  }
+
+  message(paste('\tfn:', harmonized_fn))
+  
+  curr_ds <- read.table(harmonized_fn, header=TRUE, sep='\t')
+  if (assay == "pbmc_gene_expression" && debug == TRUE) {
+      curr_ds = curr_ds[,1:20]
+  }
+  
+  # remove dups (present for some reason sample 113 day -30)
+  curr_ds <- unique(curr_ds, subset = c("subject_id", "planned_day_relative_to_boost")) 
+  row.names(curr_ds) <- paste(curr_ds[["subject_id"]],
+                                curr_ds[["planned_day_relative_to_boost"]],
+                                sep='/')
+  
+  datasets[[assay]] <- curr_ds
+}
+```
+
+## Investigate the intersection of available data per year
+```{r, investigate-intersections}
+list_input <- list()
+for (assay in assays){
+    list_input[[assay]] <- row.names(datasets[[assay]])
+}
+
+invisible({
+    img_fn = sprintf(file.path(outdir, "upset.%s.svg"), year)
+    svg(img_fn)
+    upsetplot <- upset(fromList(list_input), order.by = "freq")
+    dev.off()
+})
+upsetplot
+```
+
+#### SKIPPED: Heatmap of 2020 data availability (with RNASeq data subset for ease of visualization)
+```{r, skipped-1}
+# rnaseq.2020_short <- rnaseq.2020[1:36,1:20]
+# X_joined_short <- dplyr::full_join(rownames_to_column(log2(as.data.frame(rnaseq.2020_short + 1))),
+#                              rownames_to_column(cytof.2020), 
+#                              by = "rowname")
+# X_joined_short <- dplyr::full_join(X_joined_short,
+#                                  rownames_to_column(olink.2020),
+#                                  by = "rowname")
+# X_joined_short <- dplyr::full_join(X_joined_short,
+#                                  rownames_to_column(log2(abtiters.2020 + 1)),
+#                                  by = "rowname")
+# 
+# print(dim(X_joined_short))
+# X_mat <- t(as.matrix(dplyr::select(X_joined_short, -rowname)))
+# 
+# ggplot(reshape2::melt(X_mat)) +
+#   geom_tile(aes(x = Var1, y = Var2, fill = value, color = value), size = 1) +
+#   scale_fill_distiller(palette = "RdBu", direction = 1, na.value = "black") +
+#   scale_color_distiller(palette = "RdBu", direction = 1, na.value = "black", guide = FALSE) +
+#   ggtitle("RNA-Seq | CyTOF | OLINK") +
+#   xlab("Features") +
+#   ylab("Baseline Samples") +
+#   cowplot::theme_map() +
+#   theme(plot.title = element_text(hjust = .5, size = 14),
+#         axis.title = element_text(hjust = .5),
+#         axis.title.x = element_text(size = 10),
+#         axis.title.y = element_text(size = 10, angle = 90))
+```
+
+
+#### SKIPPED: Remove samples with no RNASeq data
+```{r, skipped-2}
+# seq_u <- union(rownames(rnaseq.2020),rownames(olink.2020))
+# seq_u_c <- union(seq_u,rownames(cytof.2020))
+# samples_remove <- setdiff(rownames(abtiters.2020),seq_u_c)
+# abtiters.2020_filt <- subset(abtiters.2020,!(rownames(abtiters.2020) %in% samples_remove))
+# 
+# samples_remove <- setdiff(union(rownames(olink.2020),rownames(cytof.2020)),rownames(rnaseq.2020))
+# olink.2020_filt <- subset(olink.2020,!(rownames(olink.2020) %in% samples_remove))
+# cytof.2020_filt <- subset(cytof.2020,!(rownames(cytof.2020) %in% samples_remove))
+# abtiters.2020_filt <- subset(abtiters.2020_filt,!(rownames(abtiters.2020_filt) %in% samples_remove))
+# 
+# rnaseq.2020_short = rnaseq.2020[1:36,1:20]
+# X_joined <- dplyr::full_join(rownames_to_column(log2(rnaseq.2020_short+1)),
+#                              rownames_to_column(cytof.2020_filt),
+#                              by = "rowname")
+# print(dim(X_joined))
+# X_joined <- dplyr::full_join(X_joined,
+#                            rownames_to_column(olink.2020_filt),
+#                            by = "rowname")
+# X_joined <- dplyr::full_join(X_joined,
+#                            rownames_to_column(log2(abtiters.2020_filt+1)),
+#                            by = "rowname")
+# print(dim(X_joined))
+#             
+# 
+# X_mat <- t(as.matrix(dplyr::select(X_joined, -rowname)))
+# 
+# ggplot(reshape2::melt(X_mat)) +
+#   geom_tile(aes(x = Var1, y = Var2, fill = value, color = value), size = 1) +
+#   scale_fill_distiller(palette = "RdBu", direction = 1, na.value = "black") +
+#   scale_color_distiller(palette = "RdBu", direction = 1, na.value = "black", guide = FALSE) +
+#   ggtitle("RNASeq | CyTOF | OLINK | abtiters") +
+#   xlab("Features") +
+#   ylab("Baseline Samples") +
+#   cowplot::theme_map() +
+#   theme(plot.title = element_text(hjust = .5, size = 14),
+#         axis.title = element_text(hjust = .5),
+#         axis.title.x = element_text(size = 10),
+#         axis.title.y = element_text(size = 10, angle = 90))
+```
+
+## Impute data using MICE algorithm
+#### Filter samples to match RNA-seq
+```{r, filter-samples}
+# find the set of samples to remove
+seq_u <- union(rownames(datasets[["pbmc_gene_expression"]]), rownames(datasets[["olink"]]))
+seq_u_c <- union(seq_u, rownames(datasets[["pbmc_cell_frequency"]]))
+samples_remove <- setdiff(rownames(datasets[["plasma_ab_titer"]]), seq_u_c)
+
+# filter abtiters
+abtiters.2020_filt <- subset(datasets[["plasma_ab_titer"]], !(rownames(datasets[["plasma_ab_titer"]]) %in% samples_remove))
+
+# filter olink and cytof
+samples_remove <- setdiff(union(rownames(datasets[["olink"]]),
+                                rownames(datasets[["pbmc_cell_frequency"]])),
+                                rownames(datasets[["pbmc_gene_expression"]]))
+olink.2020_filt <- subset(datasets[["olink"]], !(rownames(datasets[["olink"]]) %in% samples_remove))
+cytof.2020_filt <- subset(datasets[["pbmc_cell_frequency"]], !(rownames(datasets[["pbmc_cell_frequency"]]) %in% samples_remove))
+abtiters.2020_filt <- subset(abtiters.2020_filt, !(rownames(abtiters.2020_filt) %in% samples_remove))
+
+```
+#### Create an input matrix concatenating all datasets
+
+```{r, create-input-matrix}
+# create input for merging pbmc_gene_expression
+rnaseq_merge = log2(datasets[["pbmc_gene_expression"]] + 1)
+rnaseq_merge = rownames_to_column(rnaseq_merge)
+rnaseq_merge = subset(rnaseq_merge, select = -c(subject_id, planned_day_relative_to_boost))
+
+# cytof
+cytof_merge = rownames_to_column(cytof.2020_filt)
+cytof_merge = subset(cytof_merge, select = -c(subject_id, planned_day_relative_to_boost))
+
+# olink
+olink_merge = rownames_to_column(olink.2020_filt)
+olink_merge = subset(olink_merge, select = -c(subject_id, planned_day_relative_to_boost))
+
+# abtiters
+abtiters_merge = rownames_to_column(log2(abtiters.2020_filt + 1))
+abtiters_merge = subset(abtiters_merge, select = -c(subject_id, planned_day_relative_to_boost))
+```
+
+```{r, create-input-matrix-part2}
+# join rnaseq and cytof
+X_joined <- dplyr::full_join(rnaseq_merge, cytof_merge, by = "rowname")
+print(dim(X_joined))
+
+# add the olink data
+X_joined <- dplyr::full_join(X_joined, olink_merge, by = "rowname")
+print(dim(X_joined))
+
+# add the ab titer data
+X_joined <- dplyr::full_join(X_joined, abtiters_merge, by = "rowname")
+print(dim(X_joined))
+            
+# make the final matrix for imputation by 
+# transposing and removing rowname 
+X_mat <- t(as.matrix(dplyr::select(X_joined, -rowname)))
+#X_mat <- t(as.matrix(subset(X_joined, select = -rowname)))
+
+print(dim(X_mat))
+```
+
+#### Run the imputation
+This function will take a long time to run especially given the number of 
+imputation datasets generated and the numbe of maximum iterations. 
+```{r, run-imputation}
+if (debug == TRUE){
+    imputed_Data <- mice(X_mat, m=1, maxit = 1, method = 'pmm', seed = 500)
+} else {
+    imputed_Data <- mice(X_mat, m=4, maxit = 25, method = 'pmm', seed = 500)
+}
+```
+
+## Save the imputated data
+#### Extract the imputed data
+```{r, extract-imputations}
+X_mat_complete <- complete(imputed_Data, 1)
+colnames(X_mat_complete) <- X_joined$rowname
+
+X_mat_complete_df <- as.data.frame(t(X_mat_complete))
+
+split_rownames <- strsplit(row.names(X_mat_complete_df), "/")
+X_mat_complete_df["subject_id"] <- sapply(split_rownames, "[", 1)
+X_mat_complete_df["planned_day_relative_to_boost"] <- sapply(split_rownames, "[", 2)
+```
+
+#### Split the imputed data into dataframes
+```{r, split-imputations}
+# Split up into datasets:
+# rnaseq
+rnaseq_cols = colnames(datasets[["pbmc_gene_expression"]])
+rnaseq_imputed <- X_mat_complete_df[rnaseq_cols]
+
+# cytof
+cytof_cols = colnames(datasets[["pbmc_cell_frequency"]])
+cytof_imputed <- X_mat_complete_df[cytof_cols]
+
+# olink
+olink_cols = colnames(datasets[["olink"]])
+olink_imputed <- X_mat_complete_df[olink_cols]
+
+# abtiters
+abtiters_cols = colnames(datasets[["plasma_ab_titer"]])
+abtiters_imputed <- X_mat_complete_df[abtiters_cols]
+```
+
+#### Visualize imputed data
+```{r, visualize-imputations}
+X_joined <- dplyr::full_join(rownames_to_column(rnaseq_imputed[,3:20]),
+                             rownames_to_column(cytof_imputed[,3:ncol(cytof_imputed)]),
+                             by = "rowname")
+X_joined<-dplyr::full_join(X_joined,
+                           rownames_to_column(olink_imputed[,3:ncol(olink_imputed)]),
+                           by = "rowname")
+X_joined<-dplyr::full_join(X_joined,
+                           rownames_to_column(abtiters_imputed[,3:ncol(abtiters_imputed)]),
+                           by = "rowname")
+
+X_mat <- t(as.matrix(dplyr::select(X_joined, -rowname)))
+
+heatmap <- ggplot(reshape2::melt(X_mat)) +
+  geom_tile(aes(x = Var1, y = Var2, fill = value, color = value), size = 1) +
+  scale_fill_distiller(palette = "RdBu", direction = 1, na.value = "black") +
+  scale_color_distiller(palette = "RdBu", direction = 1, na.value = "black", guide = "none") +
+  ggtitle("RNASeq | CyTOF | OLINK | abtiters") +
+  xlab("Features") +
+  ylab("Baseline Samples") +
+  cowplot::theme_map() +
+  theme(plot.title = element_text(hjust = .5, size = 14),
+        axis.title = element_text(hjust = .5),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10, angle = 90))
+   
+invisible({
+    img_fn = sprintf(file.path(outdir, "imputed_heatmap.%s.svg"), year)
+    heatmap
+    svg(img_fn)
+    dev.off()
+})
+heatmap
+```
+
+#### Save to file
+```{r, save-to-file}
+template_filename = file.path(outdir, '%s.%d.tsv')
+
+rnaseq_filename = sprintf(template_filename, "pbmc_gene_expression", year)
+write_tsv(rnaseq_imputed, rnaseq_filename)
+
+cytof_filename = sprintf(template_filename, "pbmc_cell_frequency", year)
+write_tsv(cytof_imputed, cytof_filename)
+
+olink_filename = sprintf(template_filename, "olink", year)
+write_tsv(olink_imputed, olink_filename)
+
+abtiters_filename = sprintf(template_filename, "plasma_ab_titer", year)
+write_tsv(abtiters_imputed, abtiters_filename)
+```
